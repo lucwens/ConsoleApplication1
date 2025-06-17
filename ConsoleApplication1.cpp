@@ -1,6 +1,59 @@
 #include <windows.h>
 #include <iostream>
 #include <string>
+#include <conio.h>
+#include <thread>
+
+HWND GetWindowHandle(PROCESS_INFORMATION &processInfo)
+{
+    HWND  hWnd      = NULL;
+    DWORD processID = processInfo.dwProcessId;
+    // Enumerate all top-level windows to find the one that belongs to the process
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL
+        {
+            DWORD windowProcessID;
+            GetWindowThreadProcessId(hwnd, &windowProcessID);
+            if (windowProcessID == *(DWORD *)lParam)
+            {
+                *(HWND *)lParam = hwnd; // Store the found window handle
+                return FALSE;           // Stop enumeration
+            }
+            return TRUE; // Continue enumeration
+        },
+        (LPARAM)&hWnd);
+    return hWnd;
+}
+
+bool IsConsoleVisible(PROCESS_INFORMATION &processInfo)
+{
+    HWND hConsoleWnd = GetWindowHandle(processInfo);
+    return (hConsoleWnd != NULL) && IsWindowVisible(hConsoleWnd);
+}
+
+void ShowHideWindow(PROCESS_INFORMATION &processInfo, bool show)
+{
+    HWND hConsoleWnd = GetWindowHandle(processInfo);
+
+    if (hConsoleWnd == NULL)
+        return;
+
+    if (show)
+    {
+        ShowWindow(hConsoleWnd, SW_SHOW);
+        SetForegroundWindow(hConsoleWnd);
+
+        // Make sure it is shown properly
+        SetWindowLong(hConsoleWnd, GWL_EXSTYLE, GetWindowLong(hConsoleWnd, GWL_EXSTYLE) & ~WS_EX_TOOLWINDOW); // Show in taskbar
+    }
+    else
+    {
+        ShowWindow(hConsoleWnd, SW_HIDE);
+
+        // Hide from taskbar by setting the extended window style to WS_EX_TOOLWINDOW
+        SetWindowLong(hConsoleWnd, GWL_EXSTYLE, GetWindowLong(hConsoleWnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW); // Hide from taskbar
+    }
+}
 
 int main()
 {
@@ -10,14 +63,12 @@ int main()
     // Replace "YourConsoleProgram.exe" with the actual path to your program.
     // For demonstration, let's assume a simple program like "cmd.exe" for now.
     // If it's your own program, make sure it's compiled and accessible.
-    std::string programPath = "C:\\Windows\\System32\\cmd.exe"; // Example: Command Prompt
+    std::string programPath = "C:\\Windows\\System32\\cmd.exe"; // Example: Command Prompt replace with engine afterwards
 
-    STARTUPINFO         StartUpInfo;
-    PROCESS_INFORMATION ProcessInformation;
+    STARTUPINFO         StartUpInfo{};
+    PROCESS_INFORMATION ProcessInformation{};
+    StartUpInfo.cb          = sizeof(StartUpInfo);
 
-    ZeroMemory(&StartUpInfo, sizeof(StartUpInfo));
-    StartUpInfo.cb = sizeof(StartUpInfo);
-    ZeroMemory(&ProcessInformation, sizeof(ProcessInformation));
     // Set wShowWindow to SW_HIDE to make the window initially hidden
     StartUpInfo.dwFlags     = STARTF_USESHOWWINDOW;
     StartUpInfo.wShowWindow = SW_HIDE; // Hide the window
@@ -41,56 +92,31 @@ int main()
         return 1;
     }
 
-    std::cout << "Console program launched hidden. PID: " << ProcessInformation.dwProcessId << std::endl;
-    std::cout << "Waiting for 5 seconds before attempting to show it..." << std::endl;
-
-    // Wait for a few seconds (optional, for demonstration)
-    Sleep(5000); // 5000 milliseconds = 5 seconds
-
-    // --- PART 2: Show the console program ---
-
-    HWND      hwndConsole = NULL;
-    // Keep trying to find the window until it's found or a timeout occurs.
-    // This is important because the console window might not be immediately available
-    // after CreateProcess returns.
-    int       attempts    = 0;
-    const int maxAttempts = 20; // Try for up to 2 seconds (100ms * 20)
-    while (hwndConsole == NULL && attempts < maxAttempts)
+    bool continueExecution = true;
+    while (continueExecution)
     {
-        // Find the console window. Console windows typically have the class name "ConsoleWindowClass".
-        // If you know the exact title of your console, you can use that as the second argument.
-        // For cmd.exe, the default title is "Command Prompt".
-        hwndConsole = FindWindow("ConsoleWindowClass", NULL); // Look for any console window
-        if (hwndConsole == NULL)
+        if (_kbhit())
         {
-            hwndConsole = FindWindow(NULL, "Command Prompt"); // Try with default cmd title
+            char c = getchar();
+            switch (c)
+            {
+                case 'q':
+                    continueExecution = false;
+                    break; // Quit the program
+                case 's':
+                    // Show the console window
+                    ShowHideWindow(ProcessInformation, true);
+                    std::cout << "Console program should now be visible." << std::endl;
+                    break;
+                case 'h':
+                    ShowHideWindow(ProcessInformation, false);
+                    std::cout << "Console program should now be hidden." << std::endl;
+                    break;
+                default:
+                    break;
+            }
         }
-        if (hwndConsole == NULL)
-        {
-            // Wait a bit before retrying
-            Sleep(100);
-            attempts++;
-        }
-    }
-
-    if (hwndConsole)
-    {
-        DWORD processID = GetWindowThreadProcessId(hwndConsole, NULL);
-        if (processID == ProcessInformation.dwThreadId)
-            std::cout << "Process correctly identified" << std::endl;
-    }
-    if (hwndConsole)
-    {
-        // Show the window
-        ShowWindow(hwndConsole, SW_SHOW);
-        std::cout << "Console program should now be visible." << std::endl;
-        Sleep(5000); // 5000 milliseconds = 5 seconds
-        ShowWindow(hwndConsole, SW_HIDE);
-        std::cout << "Console program should now be visible." << std::endl;
-    }
-    else
-    {
-        std::cerr << "Failed to find the console window." << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep to avoid busy waiting
     }
 
     // Wait for the launched process to finish (optional)
