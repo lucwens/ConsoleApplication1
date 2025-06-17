@@ -1,40 +1,46 @@
 #include <windows.h>
 #include <iostream>
 #include <string>
-#include <conio.h>
-#include <thread>
+#include <conio.h> // For _kbhit and _getch
+#include <thread>  // For std::this_thread::sleep_for
+#include <chrono>  // For std::chrono::milliseconds
+#include <vector>  // For dynamic string for CreateProcess
 
-HWND GetWindowHandle(PROCESS_INFORMATION &processInfo)
+HWND GetConsoleWindowFromProcessId(DWORD pid)
 {
-    HWND  hWnd      = NULL;
-    DWORD processID = processInfo.dwProcessId;
-    // Enumerate all top-level windows to find the one that belongs to the process
-    EnumWindows(
-        [](HWND hwnd, LPARAM lParam) -> BOOL
+    struct HandleData
+    {
+        DWORD pid;
+        HWND  hwnd;
+    };
+
+    HandleData data{pid, NULL};
+
+    auto enumWindowsCallback = [](HWND hWnd, LPARAM lParam) -> BOOL
+    {
+        HandleData *pData = reinterpret_cast<HandleData *>(lParam);
+        DWORD       windowPid;
+        GetWindowThreadProcessId(hWnd, &windowPid);
+
+        if (windowPid == pData->pid)
         {
-            DWORD windowProcessID;
-            GetWindowThreadProcessId(hwnd, &windowProcessID);
-            if (windowProcessID == *(DWORD *)lParam)
+            TCHAR className[64];
+            GetClassName(hWnd, className, sizeof(className) / sizeof(TCHAR));
+            if (strcmp(className, "ConsoleWindowClass") == 0)
             {
-                *(HWND *)lParam = hwnd; // Store the found window handle
-                return FALSE;           // Stop enumeration
+                pData->hwnd = hWnd;
+                return FALSE; // Stop enumerating
             }
-            return TRUE; // Continue enumeration
-        },
-        (LPARAM)&hWnd);
-    return hWnd;
+        }
+        return TRUE;
+    };
+
+    EnumWindows(enumWindowsCallback, reinterpret_cast<LPARAM>(&data));
+    return data.hwnd;
 }
 
-bool IsConsoleVisible(PROCESS_INFORMATION &processInfo)
+void ShowHideWindow(HWND hConsoleWnd, bool show)
 {
-    HWND hConsoleWnd = GetWindowHandle(processInfo);
-    return (hConsoleWnd != NULL) && IsWindowVisible(hConsoleWnd);
-}
-
-void ShowHideWindow(PROCESS_INFORMATION &processInfo, bool show)
-{
-    HWND hConsoleWnd = GetWindowHandle(processInfo);
-
     if (hConsoleWnd == NULL)
         return;
 
@@ -42,28 +48,36 @@ void ShowHideWindow(PROCESS_INFORMATION &processInfo, bool show)
     {
         ShowWindow(hConsoleWnd, SW_SHOW);
         SetForegroundWindow(hConsoleWnd);
+        SetWindowPos(hConsoleWnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 
-        // Make sure it is shown properly
-        SetWindowLong(hConsoleWnd, GWL_EXSTYLE, GetWindowLong(hConsoleWnd, GWL_EXSTYLE) & ~WS_EX_TOOLWINDOW); // Show in taskbar
+        long style = GetWindowLong(hConsoleWnd, GWL_EXSTYLE);
+        if ((style & WS_EX_TOOLWINDOW) != 0)
+        {
+            SetWindowLong(hConsoleWnd, GWL_EXSTYLE, style & ~WS_EX_TOOLWINDOW);
+        }
     }
     else
     {
         ShowWindow(hConsoleWnd, SW_HIDE);
 
-        // Hide from taskbar by setting the extended window style to WS_EX_TOOLWINDOW
-        SetWindowLong(hConsoleWnd, GWL_EXSTYLE, GetWindowLong(hConsoleWnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW); // Hide from taskbar
+        long style = GetWindowLong(hConsoleWnd, GWL_EXSTYLE);
+        if ((style & WS_EX_TOOLWINDOW) == 0)
+        {
+            SetWindowLong(hConsoleWnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW);
+        }
     }
 }
+
+//---
 
 int main()
 {
     // --- PART 1: Launch the console program hidden ---
 
-    // Specify the path to your console program
-    // Replace "YourConsoleProgram.exe" with the actual path to your program.
-    // For demonstration, let's assume a simple program like "cmd.exe" for now.
-    // If it's your own program, make sure it's compiled and accessible.
-    std::string programPath = "C:\\Windows\\System32\\cmd.exe"; // Example: Command Prompt replace with engine afterwards
+    std::string       programPath = "C:\\Windows\\System32\\cmd.exe"; // Example: Command Prompt
+    // It's better to use a mutable buffer for CreateProcess
+    std::vector<char> cmdLine(programPath.begin(), programPath.end());
+    cmdLine.push_back('\0'); // Null-terminate
 
     STARTUPINFO         StartUpInfo{};
     PROCESS_INFORMATION ProcessInformation{};
@@ -71,19 +85,19 @@ int main()
 
     // Set wShowWindow to SW_HIDE to make the window initially hidden
     StartUpInfo.dwFlags     = STARTF_USESHOWWINDOW;
-    StartUpInfo.wShowWindow = SW_HIDE; // Hide the window
+    StartUpInfo.wShowWindow = SW_SHOW; // Use SW_SHOW to create the window hidden, but it will be hidden later
 
     // Create the process
-    BOOL success            = CreateProcess(NULL,                       // No module name (use command line)
-                                            (LPSTR)programPath.c_str(), // Command line
-                                            NULL,                       // Process handle not inheritable
-                                            NULL,                       // Thread handle not inheritable
-                                            FALSE,                      // Set handle inheritance to FALSE
-                                            CREATE_NEW_CONSOLE,         // Create a new console for the process
-                                            NULL,                       // Use parent's environment block
-                                            NULL,                       // Use parent's starting directory
-                                            &StartUpInfo,               // Pointer to STARTUPINFO structure
-                                            &ProcessInformation         // Pointer to PROCESS_INFORMATION structure
+    BOOL success            = CreateProcess(NULL,               // No module name (use command line)
+                                            cmdLine.data(),     // Command line (mutable)
+                                            NULL,               // Process handle not inheritable
+                                            NULL,               // Thread handle not inheritable
+                                            FALSE,              // Set handle inheritance to FALSE
+                                            CREATE_NEW_CONSOLE, // Create a new console for the process
+                                            NULL,               // Use parent's environment block
+                                            NULL,               // Use parent's starting directory
+                                            &StartUpInfo,       // Pointer to STARTUPINFO structure
+                                            &ProcessInformation // Pointer to PROCESS_INFORMATION structure
                );
 
     if (!success)
@@ -92,12 +106,36 @@ int main()
         return 1;
     }
 
+    std::cout << "Console program launched hidden. PID: " << ProcessInformation.dwProcessId << std::endl;
+    std::cout << "Press 's' to show, 'h' to hide, 'q' to quit." << std::endl;
+
+    // Optional: Wait for the child process to be idle.
+    // This helps ensure the console window is fully set up before we try to control it.
+    WaitForInputIdle(ProcessInformation.hProcess, 5000); // Wait up to 5 seconds
+    HWND childConsoleWnd = nullptr;
+
+    // Try to get and cache the window handle
+    for (int i = 0; i < 50; ++i)
+    {
+        childConsoleWnd = GetConsoleWindowFromProcessId(ProcessInformation.dwProcessId);
+        if (childConsoleWnd != nullptr)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    if (childConsoleWnd == nullptr)
+    {
+        std::cerr << "Failed to find child console window!" << std::endl;
+        TerminateProcess(ProcessInformation.hProcess, 0);
+        return 1;
+    }
+
     bool continueExecution = true;
     while (continueExecution)
     {
         if (_kbhit())
         {
-            char c = getchar();
+            char c = _getch();
             switch (c)
             {
                 case 'q':
@@ -105,29 +143,30 @@ int main()
                     break; // Quit the program
                 case 's':
                     // Show the console window
-                    ShowHideWindow(ProcessInformation, true);
+                    ShowHideWindow(childConsoleWnd, true);
                     std::cout << "Console program should now be visible." << std::endl;
                     break;
                 case 'h':
-                    ShowHideWindow(ProcessInformation, false);
+                    ShowHideWindow(childConsoleWnd, false);
                     std::cout << "Console program should now be hidden." << std::endl;
                     break;
                 default:
+                    // Optionally, print a message for unknown keys
+                    // std::cout << "Unknown command: " << c << std::endl;
                     break;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep to avoid busy waiting
     }
 
-    // Wait for the launched process to finish (optional)
-    // WaitForSingleObject(pi.hProcess, INFINITE);
+    // Terminate the launched process when done
+    TerminateProcess(ProcessInformation.hProcess, 0);
 
     // Close process and thread handles. This is important to avoid resource leaks.
     CloseHandle(ProcessInformation.hProcess);
     CloseHandle(ProcessInformation.hThread);
 
-    std::cout << "Press any key to exit." << std::endl;
-    std::cin.get();
+    std::cout << "Exiting." << std::endl;
 
     return 0;
 }
