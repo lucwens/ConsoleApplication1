@@ -1,0 +1,7 @@
+{
+  "appName": "CommandLineApp",
+  "debugMode": true,
+  "maxUsers": 50,
+  "newSetting": true,
+  "version": 1.5
+}
