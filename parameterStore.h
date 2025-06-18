@@ -5,6 +5,7 @@
 #include <vector>
 #include <optional>
 #include <nlohmann/json.hpp> // Assuming nlohmann/json.hpp is available
+#include <iostream> // Added to fix the 'std::cerr' error
 
 // Alias for convenience
 using json = nlohmann::json;
